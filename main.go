@@ -73,6 +73,12 @@ transactionsGroup.Use(authMiddleware())
 	transactionsGroup.GET("", getTransactions)
 	transactionsGroup.GET("/summary", getTransactionsSummary)
 }
+adminGroup := router.Group("/admin")
+adminGroup.Use(authMiddleware(), requireRole("admin"))
+{
+	adminGroup.GET("/wallets/:userId", adminGetWallet)
+	adminGroup.GET("/transactions", adminGetAllTransactions)
+}
 router.Run(":8080")
 }
 func signup(c *gin.Context) {
@@ -449,4 +455,37 @@ func getTransactionsSummary(c *gin.Context) {
 		Scan(&summary)
 
 	c.JSON(http.StatusOK, summary)
+}
+func adminGetWallet(c *gin.Context) {
+	userIDParam, err := strconv.Atoi(c.Param("userId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var wallet Wallet
+	if result := db.Where("user_id = ?", userIDParam).First(&wallet); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, wallet)
+}
+func adminGetAllTransactions(c *gin.Context) {
+	var transactions []Transaction
+	db.Order("created_at desc").Find(&transactions)
+	c.JSON(http.StatusOK, transactions)
+}
+func requireRole(role string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userRole := c.MustGet("role").(string)
+
+		if userRole != role {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to perform this action"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
 }
