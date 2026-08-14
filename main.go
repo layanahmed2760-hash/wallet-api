@@ -16,8 +16,7 @@ import (
 
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	_ "wallet-api/docs" 
-
+	_ "wallet-api/docs"
 )
 
 type User struct {
@@ -46,6 +45,7 @@ type Transaction struct {
 
 var db *gorm.DB
 var jwtSecret = []byte("my-super-secret-key")
+
 // @title Wallet & Expense Tracker API
 // @version 1.0
 // @description A secure wallet API with deposits, withdrawals, transfers, and transaction history
@@ -72,30 +72,34 @@ func main() {
 	router.POST("/login", login)
 
 	walletGroup := router.Group("/wallet")
-walletGroup.Use(authMiddleware())
-{
-	walletGroup.GET("", getWallet)
-	walletGroup.POST("/deposit", deposit)
-	walletGroup.POST("/withdraw", withdraw)
-	walletGroup.POST("/transfer", transfer)
+	walletGroup.Use(authMiddleware())
+	{
+		walletGroup.GET("", getWallet)
+		walletGroup.POST("/deposit", deposit)
+		walletGroup.POST("/withdraw", withdraw)
+		walletGroup.POST("/transfer", transfer)
+	}
+
+	transactionsGroup := router.Group("/transactions")
+	transactionsGroup.Use(authMiddleware())
+	{
+		transactionsGroup.GET("", getTransactions)
+		transactionsGroup.GET("/summary", getTransactionsSummary)
+	}
+
+	adminGroup := router.Group("/admin")
+	adminGroup.Use(authMiddleware(), requireRole("admin"))
+	{
+		adminGroup.GET("/wallets/:userId", adminGetWallet)
+		adminGroup.GET("/transactions", adminGetAllTransactions)
+	}
+
+	// Swagger route
+	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+	router.Run(":8080")
 }
 
-transactionsGroup := router.Group("/transactions")
-transactionsGroup.Use(authMiddleware())
-{
-	transactionsGroup.GET("", getTransactions)
-	transactionsGroup.GET("/summary", getTransactionsSummary)
-}
-adminGroup := router.Group("/admin")
-adminGroup.Use(authMiddleware(), requireRole("admin"))
-{
-	adminGroup.GET("/wallets/:userId", adminGetWallet)
-	adminGroup.GET("/transactions", adminGetAllTransactions)
-}
-// Add the Swagger route
-router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-router.Run(":8080")
-}
 // signup godoc
 // @Summary Create a new user account
 // @Description Creates a new user and automatically provisions a wallet with a 0 balance
@@ -197,6 +201,7 @@ func login(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
+
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
@@ -236,6 +241,16 @@ func authMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// getWallet godoc
+// @Summary Get current user's wallet
+// @Description Returns the balance and details of the authenticated user's wallet
+// @Tags wallet
+// @Produce json
+// @Success 200 {object} Wallet
+// @Failure 404 {object} map[string]string
+// @Router /wallet [get]
+// @Security BearerAuth
 func getWallet(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
 	userID := uint(userIDFloat)
@@ -248,6 +263,18 @@ func getWallet(c *gin.Context) {
 
 	c.JSON(http.StatusOK, wallet)
 }
+
+// deposit godoc
+// @Summary Deposit money into wallet
+// @Description Adds funds to the authenticated user's wallet and logs a deposit transaction
+// @Tags wallet
+// @Accept json
+// @Produce json
+// @Param input body object true "amount (in cents) and note"
+// @Success 200 {object} Wallet
+// @Failure 400 {object} map[string]string
+// @Router /wallet/deposit [post]
+// @Security BearerAuth
 func deposit(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
 	userID := uint(userIDFloat)
@@ -286,6 +313,18 @@ func deposit(c *gin.Context) {
 
 	c.JSON(http.StatusOK, wallet)
 }
+
+// withdraw godoc
+// @Summary Withdraw money from wallet
+// @Description Removes funds from the authenticated user's wallet if sufficient balance exists. Uses a DB transaction with row locking to prevent overdrafts from concurrent requests.
+// @Tags wallet
+// @Accept json
+// @Produce json
+// @Param input body object true "amount (in cents) and note"
+// @Success 200 {object} Wallet
+// @Failure 400 {object} map[string]string
+// @Router /wallet/withdraw [post]
+// @Security BearerAuth
 func withdraw(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
 	userID := uint(userIDFloat)
@@ -344,6 +383,19 @@ func withdraw(c *gin.Context) {
 
 	c.JSON(http.StatusOK, updatedWallet)
 }
+
+// transfer godoc
+// @Summary Transfer money to another user
+// @Description Moves funds from the authenticated user's wallet to another user's wallet inside a single DB transaction with row locking on both wallets. Either all steps succeed or all roll back.
+// @Tags wallet
+// @Accept json
+// @Produce json
+// @Param input body object true "toUsername, amount (in cents), and note"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /wallet/transfer [post]
+// @Security BearerAuth
 func transfer(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
 	senderUserID := uint(userIDFloat)
@@ -434,6 +486,20 @@ func transfer(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Transfer successful"})
 }
+
+// getTransactions godoc
+// @Summary List transaction history
+// @Description Returns the authenticated user's transactions, with optional category/date filters and pagination
+// @Tags transactions
+// @Produce json
+// @Param category query string false "Filter by category"
+// @Param from query string false "Filter from date (RFC3339)"
+// @Param to query string false "Filter to date (RFC3339)"
+// @Param page query int false "Page number (default 1)"
+// @Param limit query int false "Results per page (default 10)"
+// @Success 200 {array} Transaction
+// @Router /transactions [get]
+// @Security BearerAuth
 func getTransactions(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
 	userID := uint(userIDFloat)
@@ -478,6 +544,15 @@ func getTransactions(c *gin.Context) {
 
 	c.JSON(http.StatusOK, transactions)
 }
+
+// getTransactionsSummary godoc
+// @Summary Get category totals for the current month
+// @Description Returns total spending/income grouped by category for the current calendar month
+// @Tags transactions
+// @Produce json
+// @Success 200 {array} object
+// @Router /transactions/summary [get]
+// @Security BearerAuth
 func getTransactionsSummary(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
 	userID := uint(userIDFloat)
@@ -506,6 +581,18 @@ func getTransactionsSummary(c *gin.Context) {
 
 	c.JSON(http.StatusOK, summary)
 }
+
+// adminGetWallet godoc
+// @Summary Get any user's wallet (admin only)
+// @Description Returns a wallet by user ID. Requires the admin role.
+// @Tags admin
+// @Produce json
+// @Param userId path int true "User ID"
+// @Success 200 {object} Wallet
+// @Failure 403 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Router /admin/wallets/{userId} [get]
+// @Security BearerAuth
 func adminGetWallet(c *gin.Context) {
 	userIDParam, err := strconv.Atoi(c.Param("userId"))
 	if err != nil {
@@ -521,11 +608,22 @@ func adminGetWallet(c *gin.Context) {
 
 	c.JSON(http.StatusOK, wallet)
 }
+
+// adminGetAllTransactions godoc
+// @Summary List all transactions across every wallet (admin only)
+// @Description Returns every transaction in the system. Requires the admin role.
+// @Tags admin
+// @Produce json
+// @Success 200 {array} Transaction
+// @Failure 403 {object} map[string]string
+// @Router /admin/transactions [get]
+// @Security BearerAuth
 func adminGetAllTransactions(c *gin.Context) {
 	var transactions []Transaction
 	db.Order("created_at desc").Find(&transactions)
 	c.JSON(http.StatusOK, transactions)
 }
+
 func requireRole(role string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userRole := c.MustGet("role").(string)
