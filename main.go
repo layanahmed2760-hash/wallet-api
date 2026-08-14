@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +65,13 @@ walletGroup.Use(authMiddleware())
 	walletGroup.POST("/deposit", deposit)
 	walletGroup.POST("/withdraw", withdraw)
 	walletGroup.POST("/transfer", transfer)
+}
+
+transactionsGroup := router.Group("/transactions")
+transactionsGroup.Use(authMiddleware())
+{
+	transactionsGroup.GET("", getTransactions)
+	transactionsGroup.GET("/summary", getTransactionsSummary)
 }
 router.Run(":8080")
 }
@@ -369,4 +377,76 @@ func transfer(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Transfer successful"})
+}
+func getTransactions(c *gin.Context) {
+	userIDFloat := c.MustGet("userID").(float64)
+	userID := uint(userIDFloat)
+
+	var wallet Wallet
+	if result := db.Where("user_id = ?", userID).First(&wallet); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+		return
+	}
+
+	query := db.Where("wallet_id = ?", wallet.ID)
+
+	// Optional category filter
+	category := c.Query("category")
+	if category != "" {
+		query = query.Where("category = ?", category)
+	}
+
+	// Optional date range filter
+	from := c.Query("from")
+	to := c.Query("to")
+	if from != "" {
+		query = query.Where("created_at >= ?", from)
+	}
+	if to != "" {
+		query = query.Where("created_at <= ?", to)
+	}
+
+	// Pagination
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if err != nil || limit < 1 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+
+	var transactions []Transaction
+	query.Order("created_at desc").Limit(limit).Offset(offset).Find(&transactions)
+
+	c.JSON(http.StatusOK, transactions)
+}
+func getTransactionsSummary(c *gin.Context) {
+	userIDFloat := c.MustGet("userID").(float64)
+	userID := uint(userIDFloat)
+
+	var wallet Wallet
+	if result := db.Where("user_id = ?", userID).First(&wallet); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+		return
+	}
+
+	type CategorySummary struct {
+		Category string `json:"category"`
+		Total    int64  `json:"total"`
+	}
+
+	var summary []CategorySummary
+
+	startOfMonth := time.Now().AddDate(0, 0, -time.Now().Day()+1)
+	startOfMonth = time.Date(startOfMonth.Year(), startOfMonth.Month(), startOfMonth.Day(), 0, 0, 0, 0, time.UTC)
+
+	db.Model(&Transaction{}).
+		Select("category, SUM(amount) as total").
+		Where("wallet_id = ? AND created_at >= ?", wallet.ID, startOfMonth).
+		Group("category").
+		Scan(&summary)
+
+	c.JSON(http.StatusOK, summary)
 }
