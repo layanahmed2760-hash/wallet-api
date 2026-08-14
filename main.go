@@ -13,6 +13,11 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	_ "wallet-api/docs" 
+
 )
 
 type User struct {
@@ -41,6 +46,14 @@ type Transaction struct {
 
 var db *gorm.DB
 var jwtSecret = []byte("my-super-secret-key")
+// @title Wallet & Expense Tracker API
+// @version 1.0
+// @description A secure wallet API with deposits, withdrawals, transfers, and transaction history
+// @host localhost:8080
+// @BasePath /
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
 
 func main() {
 	dsn := "host=localhost user=postgres password=123456 dbname=wallet_app port=5432 sslmode=disable"
@@ -79,8 +92,20 @@ adminGroup.Use(authMiddleware(), requireRole("admin"))
 	adminGroup.GET("/wallets/:userId", adminGetWallet)
 	adminGroup.GET("/transactions", adminGetAllTransactions)
 }
+// Add the Swagger route
+router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 router.Run(":8080")
 }
+// signup godoc
+// @Summary Create a new user account
+// @Description Creates a new user and automatically provisions a wallet with a 0 balance
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param input body object true "username and password"
+// @Success 201 {object} User
+// @Failure 400 {object} map[string]string
+// @Router /signup [post]
 func signup(c *gin.Context) {
 	var input struct {
 		Username string `json:"username"`
@@ -124,6 +149,16 @@ func signup(c *gin.Context) {
 	c.JSON(http.StatusCreated, newUser)
 }
 
+// login godoc
+// @Summary Log in and receive a JWT
+// @Description Validates credentials and returns a signed JWT valid for 24 hours
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param input body object true "username and password"
+// @Success 200 {object} map[string]string
+// @Failure 401 {object} map[string]string
+// @Router /login [post]
 func login(c *gin.Context) {
 	var input struct {
 		Username string `json:"username"`
