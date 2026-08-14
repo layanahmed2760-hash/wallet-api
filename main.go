@@ -55,6 +55,12 @@ func main() {
 	router.POST("/signup", signup)
 	router.POST("/login", login)
 
+	walletGroup := router.Group("/wallet")
+	walletGroup.Use(authMiddleware())
+	{
+		walletGroup.GET("", getWallet)
+	}
+
 	router.Run(":8080")
 }
 func signup(c *gin.Context) {
@@ -176,4 +182,16 @@ func authMiddleware() gin.HandlerFunc {
 		c.Set("role", claims["role"])
 		c.Next()
 	}
+}
+func getWallet(c *gin.Context) {
+	userIDFloat := c.MustGet("userID").(float64)
+	userID := uint(userIDFloat)
+
+	var wallet Wallet
+	if result := db.Where("user_id = ?", userID).First(&wallet); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, wallet)
 }
