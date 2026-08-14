@@ -60,8 +60,8 @@ walletGroup.Use(authMiddleware())
 {
 	walletGroup.GET("", getWallet)
 	walletGroup.POST("/deposit", deposit)
+	walletGroup.POST("/withdraw", withdraw)
 }
-
 	router.Run(":8080")
 }
 func signup(c *gin.Context) {
@@ -227,6 +227,49 @@ func deposit(c *gin.Context) {
 	transaction := Transaction{
 		WalletID: wallet.ID,
 		Type:     "deposit",
+		Amount:   input.Amount,
+		Note:     input.Note,
+	}
+	db.Create(&transaction)
+
+	c.JSON(http.StatusOK, wallet)
+}
+func withdraw(c *gin.Context) {
+	userIDFloat := c.MustGet("userID").(float64)
+	userID := uint(userIDFloat)
+
+	var input struct {
+		Amount int64  `json:"amount"`
+		Note   string `json:"note"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if input.Amount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Amount must be positive"})
+		return
+	}
+
+	var wallet Wallet
+	if result := db.Where("user_id = ?", userID).First(&wallet); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+		return
+	}
+
+	if wallet.Balance-input.Amount < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient funds"})
+		return
+	}
+
+	wallet.Balance -= input.Amount
+	db.Save(&wallet)
+
+	transaction := Transaction{
+		WalletID: wallet.ID,
+		Type:     "withdraw",
 		Amount:   input.Amount,
 		Note:     input.Note,
 	}
