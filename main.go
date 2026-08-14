@@ -1,8 +1,13 @@
 package main
 
 import (
+	"net/http"
+	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -17,7 +22,7 @@ type User struct {
 type Wallet struct {
 	ID      uint  `json:"id" gorm:"primaryKey"`
 	UserID  uint  `json:"userId" gorm:"unique;not null"` // one wallet per user
-	Balance int64 `json:"balance"`                        // stored in cents
+	Balance int64 `json:"balance"`                       // stored in cents
 }
 
 type Transaction struct {
@@ -32,6 +37,7 @@ type Transaction struct {
 }
 
 var db *gorm.DB
+var jwtSecret = []byte("my-super-secret-key")
 
 func main() {
 	dsn := "host=localhost user=postgres password=123456 dbname=wallet_app port=5432 sslmode=disable"
@@ -43,4 +49,131 @@ func main() {
 	}
 
 	db.AutoMigrate(&User{}, &Wallet{}, &Transaction{})
+
+	router := gin.Default()
+
+	router.POST("/signup", signup)
+	router.POST("/login", login)
+
+	router.Run(":8080")
+}
+func signup(c *gin.Context) {
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if input.Username == "" || input.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password are required"})
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+
+	newUser := User{
+		Username: input.Username,
+		Password: string(hashedPassword),
+		Role:     "user",
+	}
+
+	if result := db.Create(&newUser); result.Error != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username already exists"})
+		return
+	}
+
+	// Every new user automatically gets a wallet, starting at 0 balance
+	newWallet := Wallet{
+		UserID:  newUser.ID,
+		Balance: 0,
+	}
+	db.Create(&newWallet)
+
+	c.JSON(http.StatusCreated, newUser)
+}
+
+func login(c *gin.Context) {
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	var user User
+	if result := db.Where("username = ?", input.Username).First(&user); result.Error != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"userID":   user.ID,
+		"username": user.Username,
+		"role":     user.Role,
+		"exp":      time.Now().Add(24 * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
+}
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+			c.Abort()
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization format"})
+			c.Abort()
+			return
+		}
+
+		token, err := jwt.Parse(parts[1], func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.Abort()
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
+			c.Abort()
+			return
+		}
+
+		c.Set("userID", claims["userID"])
+		c.Set("role", claims["role"])
+		c.Next()
+	}
 }
