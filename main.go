@@ -270,29 +270,44 @@ func withdraw(c *gin.Context) {
 		return
 	}
 
-	var wallet Wallet
-	if result := db.Where("user_id = ?", userID).First(&wallet); result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+	var updatedWallet Wallet
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var wallet Wallet
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", userID).First(&wallet).Error; err != nil {
+			return fmt.Errorf("wallet not found")
+		}
+
+		if wallet.Balance-input.Amount < 0 {
+			return fmt.Errorf("insufficient funds")
+		}
+
+		wallet.Balance -= input.Amount
+		if err := tx.Save(&wallet).Error; err != nil {
+			return err
+		}
+
+		transaction := Transaction{
+			WalletID: wallet.ID,
+			Type:     "withdraw",
+			Amount:   input.Amount,
+			Note:     input.Note,
+		}
+		if err := tx.Create(&transaction).Error; err != nil {
+			return err
+		}
+
+		updatedWallet = wallet
+		return nil
+	})
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if wallet.Balance-input.Amount < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient funds"})
-		return
-	}
-
-	wallet.Balance -= input.Amount
-	db.Save(&wallet)
-
-	transaction := Transaction{
-		WalletID: wallet.ID,
-		Type:     "withdraw",
-		Amount:   input.Amount,
-		Note:     input.Note,
-	}
-	db.Create(&transaction)
-
-	c.JSON(http.StatusOK, wallet)
+	c.JSON(http.StatusOK, updatedWallet)
 }
 func transfer(c *gin.Context) {
 	userIDFloat := c.MustGet("userID").(float64)
