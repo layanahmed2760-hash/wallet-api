@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type User struct {
@@ -61,8 +63,9 @@ walletGroup.Use(authMiddleware())
 	walletGroup.GET("", getWallet)
 	walletGroup.POST("/deposit", deposit)
 	walletGroup.POST("/withdraw", withdraw)
+	walletGroup.POST("/transfer", transfer)
 }
-	router.Run(":8080")
+router.Run(":8080")
 }
 func signup(c *gin.Context) {
 	var input struct {
@@ -276,4 +279,94 @@ func withdraw(c *gin.Context) {
 	db.Create(&transaction)
 
 	c.JSON(http.StatusOK, wallet)
+}
+func transfer(c *gin.Context) {
+	userIDFloat := c.MustGet("userID").(float64)
+	senderUserID := uint(userIDFloat)
+
+	var input struct {
+		ToUsername string `json:"toUsername"`
+		Amount     int64  `json:"amount"`
+		Note       string `json:"note"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if input.Amount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Amount must be positive"})
+		return
+	}
+
+	var receiverUser User
+	if result := db.Where("username = ?", input.ToUsername).First(&receiverUser); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Recipient user not found"})
+		return
+	}
+
+	if receiverUser.ID == senderUserID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot transfer to yourself"})
+		return
+	}
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var senderWallet Wallet
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", senderUserID).First(&senderWallet).Error; err != nil {
+			return fmt.Errorf("sender wallet not found")
+		}
+
+		if senderWallet.Balance < input.Amount {
+			return fmt.Errorf("insufficient funds")
+		}
+
+		var receiverWallet Wallet
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", receiverUser.ID).First(&receiverWallet).Error; err != nil {
+			return fmt.Errorf("recipient wallet not found")
+		}
+
+		senderWallet.Balance -= input.Amount
+		if err := tx.Save(&senderWallet).Error; err != nil {
+			return err
+		}
+
+		receiverWallet.Balance += input.Amount
+		if err := tx.Save(&receiverWallet).Error; err != nil {
+			return err
+		}
+
+		outTransaction := Transaction{
+			WalletID:        senderWallet.ID,
+			Type:            "transfer_out",
+			Amount:          input.Amount,
+			Note:            input.Note,
+			RelatedWalletID: &receiverWallet.ID,
+		}
+		if err := tx.Create(&outTransaction).Error; err != nil {
+			return err
+		}
+
+		inTransaction := Transaction{
+			WalletID:        receiverWallet.ID,
+			Type:            "transfer_in",
+			Amount:          input.Amount,
+			Note:            input.Note,
+			RelatedWalletID: &senderWallet.ID,
+		}
+		if err := tx.Create(&inTransaction).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Transfer successful"})
 }
