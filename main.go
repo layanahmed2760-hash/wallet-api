@@ -18,6 +18,7 @@ import (
 
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"os"
 )
 
 type User struct {
@@ -57,7 +58,14 @@ var jwtSecret = []byte("my-super-secret-key")
 // @name Authorization
 
 func main() {
-	dsn := "host=localhost user=postgres password=123456 dbname=wallet_app port=5432 sslmode=disable"
+dbHost := getEnv("DB_HOST", "localhost")
+dbUser := getEnv("DB_USER", "postgres")
+dbPassword := getEnv("DB_PASSWORD", "123456")
+dbName := getEnv("DB_NAME", "wallet_app")
+dbPort := getEnv("DB_PORT", "5432")
+
+dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+	dbHost, dbUser, dbPassword, dbName, dbPort)
 
 	var err error
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
@@ -637,4 +645,10 @@ func requireRole(role string) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+func getEnv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
