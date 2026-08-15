@@ -1,5 +1,26 @@
 basePath: /
 definitions:
+  main.Transaction:
+    properties:
+      amount:
+        type: integer
+      category:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: integer
+      note:
+        type: string
+      relatedWalletId:
+        description: nullable, only set for transfers
+        type: integer
+      type:
+        description: deposit, withdraw, transfer_in, transfer_out
+        type: string
+      walletId:
+        type: integer
+    type: object
   main.User:
     properties:
       id:
@@ -9,6 +30,17 @@ definitions:
       username:
         type: string
     type: object
+  main.Wallet:
+    properties:
+      balance:
+        description: stored in cents
+        type: integer
+      id:
+        type: integer
+      userId:
+        description: one wallet per user
+        type: integer
+    type: object
 host: localhost:8080
 info:
   contact: {}
@@ -17,6 +49,62 @@ info:
   title: Wallet & Expense Tracker API
   version: "1.0"
 paths:
+  /admin/transactions:
+    get:
+      description: Returns every transaction in the system. Requires the admin role.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.Transaction'
+            type: array
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List all transactions across every wallet (admin only)
+      tags:
+      - admin
+  /admin/wallets/{userId}:
+    get:
+      description: Returns a wallet by user ID. Requires the admin role.
+      parameters:
+      - description: User ID
+        in: path
+        name: userId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.Wallet'
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get any user's wallet (admin only)
+      tags:
+      - admin
   /login:
     post:
       consumes:
@@ -76,6 +164,187 @@ paths:
       summary: Create a new user account
       tags:
       - auth
+  /transactions:
+    get:
+      description: Returns the authenticated user's transactions, with optional category/date
+        filters and pagination
+      parameters:
+      - description: Filter by category
+        in: query
+        name: category
+        type: string
+      - description: Filter from date (RFC3339)
+        in: query
+        name: from
+        type: string
+      - description: Filter to date (RFC3339)
+        in: query
+        name: to
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Results per page (default 10)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/main.Transaction'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List transaction history
+      tags:
+      - transactions
+  /transactions/summary:
+    get:
+      description: Returns total spending/income grouped by category for the current
+        calendar month
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Get category totals for the current month
+      tags:
+      - transactions
+  /wallet:
+    get:
+      description: Returns the balance and details of the authenticated user's wallet
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.Wallet'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current user's wallet
+      tags:
+      - wallet
+  /wallet/deposit:
+    post:
+      consumes:
+      - application/json
+      description: Adds funds to the authenticated user's wallet and logs a deposit
+        transaction
+      parameters:
+      - description: amount (in cents) and note
+        in: body
+        name: input
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.Wallet'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deposit money into wallet
+      tags:
+      - wallet
+  /wallet/transfer:
+    post:
+      consumes:
+      - application/json
+      description: Moves funds from the authenticated user's wallet to another user's
+        wallet inside a single DB transaction with row locking on both wallets. Either
+        all steps succeed or all roll back.
+      parameters:
+      - description: toUsername, amount (in cents), and note
+        in: body
+        name: input
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Transfer money to another user
+      tags:
+      - wallet
+  /wallet/withdraw:
+    post:
+      consumes:
+      - application/json
+      description: Removes funds from the authenticated user's wallet if sufficient
+        balance exists. Uses a DB transaction with row locking to prevent overdrafts
+        from concurrent requests.
+      parameters:
+      - description: amount (in cents) and note
+        in: body
+        name: input
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/main.Wallet'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Withdraw money from wallet
+      tags:
+      - wallet
 securityDefinitions:
   BearerAuth:
     in: header
